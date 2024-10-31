@@ -1,3 +1,8 @@
+new usage > 
+```
+python3 raw0xy.py /path/to/folder <ip:port>
+```
+
 #### Tool Information
 
 In the recent android application testing, I encountered a challenge. That is import raw HTTP request files (files are obtained from HTTP Canary, SSL Capture etc.,) to BurpSuite. However, I could not find any method or extension to import bulk raw HTTP requests into Burp other than manually copying and pasting them into the repeater. That's why I wrote this python tool to parse raw HTTP request file and proxy through BurpSuite.
