@@ -1,139 +1,95 @@
 import requests
 import sys
+import os
 import pyfiglet
-import json
-import gzip
 import re
 import urllib3
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.exceptions import RequestException
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#for window to run for bulk files "for /r %i in (http_req*) do python raw0xy.py %i <ip:port>"
-#for Linux to run for bulk files "ls http_req*|parallel python raw0py.py {} <ip:port>"
-
-def split_on_empty_lines(s):
+def split_on_empty_lines(text):
+    """Splits text on consecutive empty lines."""
     blank_line_regex = r"(?:\r?\n){2,}"
-    return re.split(blank_line_regex, s.strip())
+    return re.split(blank_line_regex, text.strip())
 
-def  helpMessage():
-	ascii_banner = pyfiglet.figlet_format("raw0xy")
-	print(ascii_banner+"\t\t\tBeta v1.0 ")
-	print("""No arguments are passed
-       Usage: python3 raw0xy <raw_request_file> <ip:port>\r\n
-       For window to run for bulk files "for /r %i in (regex_file) do python raw0xy.py %i <ip:port>\r\n
-       For Linux to run for bulk files "ls regex_file*|parallel python raw0py.py {} <ip:port>""")
- 
-def getRequest(param_url,params_headers,proxy):
-    s = requests.Session()
-    s.proxies = {'http' : proxy, 'https' : proxy}
+def display_help():
+    ascii_banner = pyfiglet.figlet_format("raw0xy")
+    print(f"{ascii_banner}\t\t\tBeta v1.0")
+    print("""Usage: python3 raw0xy.py <folder_path> <ip:port>
+    Processes all .txt files in the specified folder.""")
+
+def request(method, url, headers, body=None, proxy=None):
+    session = requests.Session()
+    session.proxies = {'http': proxy, 'https': proxy}
     try:
-    	r = s.get(param_url, headers=params_headers,verify=False)
-    	print(r.status_code)
-    except requests.exceptions.RequestException as e:
-    	raise SystemExit(e)
-def postRequest(param_url,params_headers,param_body,proxy):
-    s = requests.Session()
-    s.proxies = {'http' : proxy, 'https' : proxy}
-    try:
-    	r = s.post(param_url,headers=params_headers,data=body,verify=False)
-    	print(r.status_code)
-    except requests.exceptions.RequestException as e:
-    	raise SystemExit(e)
+        response = session.request(method, url, headers=headers, data=body, verify=False)
+        print(f"{method} request to {url} completed with status code {response.status_code}")
+        return response.status_code
+    except RequestException as e:
+        print(f"Request failed for {url}: {e}")
+        return None
 
-def putRequest(param_url,params_headers,param_body,proxy):
-    s = requests.Session()
-    s.proxies = {'http' : proxy, 'https' : proxy}
-    try:
-    	r = s.put(param_url,headers=params_headers,data=body,verify=False)
-    	print(r.status_code)
-    except requests.exceptions.RequestException as e:
-    	raise SystemExit(e)
-    except UnicodeEncodeError:
-     	print("UnicodeEncodeError") 
+def process_headers(headers_list, host_index):
+    """Removes the request line and Host header, returning the remaining headers."""
+    headers_list.pop(0)
+    headers_list.pop(host_index - 1)
+    return headers_list
 
-def deleteRequest(param_url,params_headers,param_body,proxy):
-    s = requests.Session()
-    s.proxies = {'http' : proxy, 'https' : proxy}
-    try:
-    	r = s.delete(param_url,headers=params_headers,data=body,verify=False)
-    	print(r.status_code)
-    except requests.exceptions.RequestException as e:
-    	raise SystemExit(e)
+def parse_headers(raw_headers):
+    """Parses raw headers list into a dictionary."""
+    headers = {}
+    for line in raw_headers:
+        key, value = line.split(":", 1)
+        headers[key.strip()] = value.strip()
+    return headers
 
-def optionsRequest(param_url,params_headers,param_body,proxy):
-    s = requests.Session()
-    s.proxies = {'http' : proxy, 'https' : proxy }
-    try:
-    	r = s.options(param_url,headers=params_headers,data=body,verify=False)
-    	print(r.status_code)
-    except requests.exceptions.RequestException as e:
-    	raise SystemExit(e)
+def parse_body(parts):
+    """Combines body parts into a single body string."""
+    return "\r\n\r\n".join(parts[1:]) if len(parts) > 1 else parts[0]
 
-def requestHeaders(request_head_list, host_header_index):
-	del request_head_list[0]
-	host_header_index=host_header_index-1
-	del request_head_list[host_header_index]
-	return request_head_list
-def combine_elements(a_list):
-	length=len(a_list)
-	raw_body=a_list[1:length]
-	body="\r\n\r\n".join(raw_body)
-	return body
+def handle_request(file_path, proxy_ip):
+    with open(file_path, 'r', errors='ignore') as f:
+        raw_data = f.read()
 
-try:
-	file=sys.argv[1]
-	proxy_ip=sys.argv[2]
-except IndexError:
-	helpMessage()
-	sys.exit(1)
+    parts = split_on_empty_lines(raw_data)
+    if 'Transfer-Encoding' in parts[0]:
+        print(f"Unsupported format in file {file_path}: Transfer-Encoding: chunked")
+        return
 
+    request_line = parts[0].splitlines()
+    method, query = request_line[0].split()[:2]
+    host_index = next(i for i, line in enumerate(request_line) if line.lower().startswith("host:"))
+    hostname = f"{request_line[host_index].split()[1]}:443"
+    url = f"https://{hostname}{query}"
 
+    body = parse_body(parts) if len(parts) > 1 else "" if method != 'GET' else None
+    raw_headers = process_headers(request_line, host_index)
+    headers = parse_headers(raw_headers)
 
-with open(file, 'r',errors='ignore') as my_file:
-    raw_data=my_file.read()
-a=split_on_empty_lines(raw_data)
-if 'Transfer-Encoding' in a[0]:
-	print("Not supported format found: Transfer-Encoding: chunked")
-	sys.exit()
-request_head=a[0].splitlines()
-#print(request_head)
-method=request_head[0].split()[0]
-query=request_head[0].split()[1]
-get_index=[i for i, word in enumerate(request_head) if word.startswith(('Host:','host:'))]
-hostname=request_head[get_index[0]].split(" ")[1]+":443"
-# print(method)
-# print(query)
-# print(host)
-url="https://"+hostname+query
+    request(method, url, headers, body, proxy_ip)
 
-if len(a) == 2:
-	body=a[1].encode('utf-8')
-elif len(a) == 1 and method != 'GET':
-	body=""
-elif len(a) > 2:
-	body=combine_elements(a)
-	#print(body)
-	#print(type(body))
+def main():
+    if len(sys.argv) < 3:
+        display_help()
+        sys.exit(1)
 
-raw_headers=requestHeaders(request_head,get_index[0])
-#print(raw_headers)
-headers = {}
+    folder_path = sys.argv[1]
+    proxy_ip = sys.argv[2]
 
-for a in raw_headers:
-	#print(a)
-	k=a.split(":")[0].strip()
-	#print(k)
-	v=a.split(":")[1].strip()
-	#print(v)
-	d=dict({k:v})
-	headers.update(d)
+    # Get all .txt files in the specified folder
+    files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".txt")]
+    if not files:
+        print("No .txt files found in the specified folder.")
+        sys.exit(1)
 
-if method == 'GET':
-    getRequest(url,headers,proxy_ip)
-elif method == 'POST':
-    postRequest(url,headers,body,proxy_ip)
-elif method == 'PUT':
-    putRequest(url,headers,body,proxy_ip)
-elif method == 'DELETE':
-    deleteRequest(url,headers,body,proxy_ip)
-elif method == 'OPTIONS':
-    optionsRequest(url,headers,body,proxy_ip)
+    # Using ThreadPoolExecutor to handle threads
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(handle_request, file_path, proxy_ip) for file_path in files]
+
+        for future in as_completed(futures):
+            future.result()  # This will raise exceptions if any occurred in a thread
+
+if __name__ == "__main__":
+    main()
